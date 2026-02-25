@@ -1,0 +1,515 @@
+// Hola Prime World Cup - Complete Database Schema
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  TRADER
+}
+
+enum TournamentPhase {
+  REGISTRATION
+  QUALIFIER
+  ROUND_OF_32
+  ROUND_OF_16
+  QUARTERFINAL
+  SEMIFINAL
+  GRAND_FINAL
+  COMPLETED
+}
+
+enum MatchStatus {
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+  WALKOVER
+  DISPUTED
+}
+enum TradingPlatform {
+  MT4
+  MT5
+  CTRADER
+  MATCHTRADER
+  DXTRADE
+  TRADOVATE
+  NINJATRADER
+}
+
+enum TraderStatus {
+  REGISTERED
+  KYC_PENDING
+  KYC_APPROVED
+  KYC_REJECTED
+  ACTIVE
+  DISQUALIFIED
+  ELIMINATED
+  FINALIST
+  CHAMPION
+}
+
+enum AccountStatus {
+  PENDING
+  ACTIVE
+  FROZEN
+  CLOSED
+}
+
+enum PostStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  FAILED
+  BOUNCED
+}
+
+enum CRMLeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  REGISTERED
+  CONVERTED
+  LOST
+}
+
+enum DisqualificationReason {
+  MAX_DRAWDOWN_BREACH
+  DAILY_DRAWDOWN_BREACH
+  MIN_TRADES_NOT_MET
+  ARBITRAGE_DETECTED
+  DUPLICATE_ACCOUNT
+  COLLUSION
+  INACTIVITY
+  CODE_OF_CONDUCT
+  WITHDRAWAL
+}
+
+// ─── CORE AUTH ────────────────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  role            UserRole  @default(TRADER)
+  isActive        Boolean   @default(true)
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  trader          Trader?
+  adminActions    AdminLog[]
+  sessions        Session[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── TOURNAMENT CONFIGURATION ─────────────────────────────────────────────
+
+model TournamentConfig {
+  id                    String          @id @default(cuid())
+  name                  String          @default("Hola Prime World Cup 2026")
+  currentPhase          TournamentPhase @default(REGISTRATION)
+  registrationOpen      Boolean         @default(false)
+  registrationDeadline  DateTime?
+  qualifierStart        DateTime?
+  qualifierEnd          DateTime?
+  grandFinalDate        DateTime?
+  totalPrizePool        Decimal         @db.Decimal(12, 2)
+  firstPrize            Decimal         @db.Decimal(12, 2)
+  secondPrize           Decimal         @db.Decimal(12, 2)
+  qualifierAccountSize  Decimal         @db.Decimal(12, 2) @default(10000)
+  knockoutAccountSize   Decimal         @db.Decimal(12, 2) @default(10000)
+  maxLeverage           Int             @default(30)
+  dailyDrawdownPct      Decimal         @db.Decimal(5, 2) @default(8.0)
+  totalDrawdownPct      Decimal         @db.Decimal(5, 2) @default(12.0)
+  minTradesPerRound     Int             @default(10)
+  maxPositionSizePct    Decimal         @db.Decimal(5, 2) @default(5.0)
+  tradingStartHour      Int             @default(0)   // UTC hour
+  tradingEndHour        Int             @default(23)
+  allowedInstruments    String[]        @default(["EURUSD","GBPUSD","USDJPY","XAUUSD","USOIL","US30","NAS100","GER40"])
+  updatedAt             DateTime        @updatedAt
+  updatedBy             String?
+}
+
+// ─── COUNTRIES ────────────────────────────────────────────────────────────
+
+model Country {
+  id          String   @id @default(cuid())
+  code        String   @unique  // ISO 3166-1 alpha-2
+  name        String
+  flag        String   // emoji or CDN path
+  isEligible  Boolean  @default(true)
+  region      String?
+  traders     Trader[]
+  brackets    BracketEntry[]
+}
+
+// ─── TRADERS ──────────────────────────────────────────────────────────────
+
+model Trader {
+  id                String        @id @default(cuid())
+  userId            String        @unique
+  countryId         String
+  firstName         String
+  lastName          String
+  displayName       String        @unique
+  email             String        @unique
+  phone             String?
+  dateOfBirth       DateTime?
+  nationality       String?
+  status            TraderStatus  @default(REGISTERED)
+  kycDocumentUrl    String?
+  kycVerifiedAt     DateTime?
+  kycVerifiedBy     String?
+  ipAddress         String?
+  deviceFingerprint String?
+  referredBy        String?
+  registeredAt      DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  user              User          @relation(fields: [userId], references: [id])
+  country           Country       @relation(fields: [countryId], references: [id])
+  accounts          TradingAccount[]
+  qualifierEntry    QualifierEntry?
+  bracketEntries    BracketEntry[]
+  matchesAsTrader1  Match[]       @relation("Trader1Matches")
+  matchesAsTrader2  Match[]       @relation("Trader2Matches")
+  wonMatches        Match[]       @relation("WonMatches")
+  disqualifications Disqualification[]
+  notes             TraderNote[]
+  emails            EmailLog[]    @relation("TraderEmails")
+  crmRecord         CRMRecord?
+
+  @@index([countryId])
+  @@index([status])
+}
+
+model TraderNote {
+  id        String   @id @default(cuid())
+  traderId  String
+  note      String
+  author    String
+  createdAt DateTime @default(now())
+  trader    Trader   @relation(fields: [traderId], references: [id])
+}
+
+// ─── TRADING ACCOUNTS ─────────────────────────────────────────────────────
+
+model TradingAccount {
+  id              String        @id @default(cuid())
+  traderId        String
+  accountNumber   String        @unique
+  brokerAccountId String?       @unique // MT5/cTrader account ID
+  phase           TournamentPhase
+  status          AccountStatus @default(PENDING)
+  openingBalance  Decimal       @db.Decimal(12, 2)
+  currentBalance  Decimal       @db.Decimal(12, 2)
+  currentEquity   Decimal       @db.Decimal(12, 2)
+  peakBalance     Decimal       @db.Decimal(12, 2)
+  maxDrawdown     Decimal       @db.Decimal(8, 4) @default(0)
+  totalTrades     Int           @default(0)
+  winningTrades   Int           @default(0)
+  losingTrades    Int           @default(0)
+  totalVolumeLots Decimal       @db.Decimal(12, 4) @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  lastSyncAt      DateTime?
+  platformAccount TradingPlatformAccount?
+
+  trader          Trader        @relation(fields: [traderId], references: [id])
+  trades          Trade[]
+  snapshots       BalanceSnapshot[]
+
+  @@index([traderId])
+  @@index([status])
+}
+
+model TradingPlatformAccount {
+  id               String          @id @default(cuid())
+  tradingAccountId String          @unique
+
+  platform         TradingPlatform
+  externalAccountId String         @unique // account id on MT5/cTrader/etc
+  server           String?         // MT server name, etc
+
+  // Auth (store only what you need per platform)
+  apiKey           String?
+  accessToken      String?
+  refreshToken     String?
+  tokenExpiresAt   DateTime?
+
+  // If you ever need login/password for a bridge (avoid if possible)
+  login            String?
+  passwordEnc      String?         // encrypted later (don’t store plain)
+  
+  status           String          @default("ACTIVE") // ACTIVE | REVOKED | ERROR
+  lastSyncAt       DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  tradingAccount   TradingAccount  @relation(fields: [tradingAccountId], references: [id])
+
+  @@index([platform])
+  @@index([status])
+}
+
+model Trade {
+  id              String   @id @default(cuid())
+  accountId       String
+  brokerTradeId   String?  @unique
+  symbol          String
+  direction       String   // BUY / SELL
+  openTime        DateTime
+  closeTime       DateTime?
+  openPrice       Decimal  @db.Decimal(10, 5)
+  closePrice      Decimal? @db.Decimal(10, 5)
+  lots            Decimal  @db.Decimal(8, 4)
+  profit          Decimal? @db.Decimal(12, 2)
+  commission      Decimal  @db.Decimal(8, 2) @default(0)
+  swap            Decimal  @db.Decimal(8, 2) @default(0)
+  isOpen          Boolean  @default(true)
+  isFlaggedCheat  Boolean  @default(false)
+  flagReason      String?
+  createdAt       DateTime @default(now())
+
+  account         TradingAccount @relation(fields: [accountId], references: [id])
+
+  @@index([accountId])
+  @@index([brokerTradeId])
+}
+
+model BalanceSnapshot {
+  id        String   @id @default(cuid())
+  accountId String
+  balance   Decimal  @db.Decimal(12, 2)
+  equity    Decimal  @db.Decimal(12, 2)
+  drawdown  Decimal  @db.Decimal(8, 4)
+  returnPct Decimal  @db.Decimal(8, 4)
+  timestamp DateTime @default(now())
+
+  account   TradingAccount @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, timestamp])
+}
+
+// ─── QUALIFIER ────────────────────────────────────────────────────────────
+
+model QualifierEntry {
+  id              String   @id @default(cuid())
+  traderId        String   @unique
+  accountId       String
+  rank            Int?
+  countryRank     Int?
+  returnPct       Decimal  @db.Decimal(8, 4) @default(0)
+  maxDrawdown     Decimal  @db.Decimal(8, 4) @default(0)
+  totalTrades     Int      @default(0)
+  sharpeRatio     Decimal? @db.Decimal(8, 4)
+  qualified       Boolean  @default(false)
+  qualifiedAt     DateTime?
+  updatedAt       DateTime @updatedAt
+
+  trader          Trader   @relation(fields: [traderId], references: [id])
+}
+
+// ─── BRACKET & MATCHES ────────────────────────────────────────────────────
+
+model BracketEntry {
+  id        String          @id @default(cuid())
+  traderId  String
+  countryId String
+  phase     TournamentPhase
+  seed      Int?
+  createdAt DateTime        @default(now())
+
+  trader    Trader          @relation(fields: [traderId], references: [id])
+  country   Country         @relation(fields: [countryId], references: [id])
+}
+
+model Match {
+  id              String      @id @default(cuid())
+  phase           TournamentPhase
+  matchNumber     Int
+  trader1Id       String?
+  trader2Id       String?
+  account1Id      String?
+  account2Id      String?
+  winnerId        String?
+  status          MatchStatus @default(SCHEDULED)
+  startTime       DateTime?
+  endTime         DateTime?
+  trader1ReturnPct Decimal?   @db.Decimal(8, 4)
+  trader2ReturnPct Decimal?   @db.Decimal(8, 4)
+  trader1Trades   Int?
+  trader2Trades   Int?
+  trader1MaxDD    Decimal?    @db.Decimal(8, 4)
+  trader2MaxDD    Decimal?    @db.Decimal(8, 4)
+  notes           String?
+  verifiedBy      String?
+  verifiedAt      DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  trader1         Trader?     @relation("Trader1Matches", fields: [trader1Id], references: [id])
+  trader2         Trader?     @relation("Trader2Matches", fields: [trader2Id], references: [id])
+  winner          Trader?     @relation("WonMatches", fields: [winnerId], references: [id])
+
+  @@index([phase])
+  @@index([status])
+}
+
+// ─── DISQUALIFICATIONS ────────────────────────────────────────────────────
+
+model Disqualification {
+  id        String                 @id @default(cuid())
+  traderId  String
+  reason    DisqualificationReason
+  details   String
+  phase     TournamentPhase
+  issuedBy  String
+  issuedAt  DateTime               @default(now())
+
+  trader    Trader                 @relation(fields: [traderId], references: [id])
+}
+
+// ─── CMS ──────────────────────────────────────────────────────────────────
+
+model Post {
+  id          String     @id @default(cuid())
+  slug        String     @unique
+  title       String
+  excerpt     String?
+  content     String     @db.Text
+  coverImage  String?
+  category    String     @default("news")
+  tags        String[]   @default([])
+  status      PostStatus @default(DRAFT)
+  featured    Boolean    @default(false)
+  authorId    String
+  publishedAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([status, publishedAt])
+  @@index([slug])
+}
+
+model MediaAsset {
+  id          String   @id @default(cuid())
+  filename    String
+  url         String
+  mimeType    String
+  size        Int
+  uploadedBy  String
+  createdAt   DateTime @default(now())
+}
+
+// ─── CRM ──────────────────────────────────────────────────────────────────
+
+model CRMRecord {
+  id            String        @id @default(cuid())
+  traderId      String        @unique
+  leadStatus    CRMLeadStatus @default(NEW)
+  source        String?       // social, referral, direct, paid
+  assignedTo    String?
+  lastContactAt DateTime?
+  nextFollowUp  DateTime?
+  notes         String?
+  tags          String[]      @default([])
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  trader        Trader        @relation(fields: [traderId], references: [id])
+  activities    CRMActivity[]
+}
+
+model CRMActivity {
+  id          String   @id @default(cuid())
+  crmId       String
+  type        String   // email, call, note, status_change
+  description String
+  performedBy String
+  createdAt   DateTime @default(now())
+
+  crm         CRMRecord @relation(fields: [crmId], references: [id])
+}
+
+model EmailLog {
+  id          String      @id @default(cuid())
+  traderId    String?
+  to          String
+  from        String
+  subject     String
+  body        String      @db.Text
+  status      EmailStatus @default(QUEUED)
+  template    String?
+  sentAt      DateTime?
+  error       String?
+  createdAt   DateTime    @default(now())
+
+  trader      Trader?     @relation("TraderEmails", fields: [traderId], references: [id])
+}
+
+model EmailTemplate {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  name      String
+  subject   String
+  body      String   @db.Text
+  variables String[]
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── ADMIN AUDIT ──────────────────────────────────────────────────────────
+
+model AdminLog {
+  id          String   @id @default(cuid())
+  userId      String
+  action      String
+  entityType  String?
+  entityId    String?
+  details     String?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model WebhookLog {
+  id          String   @id @default(cuid())
+  source      String   // broker, payment, etc.
+  event       String
+  payload     String   @db.Text
+  processed   Boolean  @default(false)
+  error       String?
+  createdAt   DateTime @default(now())
+}
